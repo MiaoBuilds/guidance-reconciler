@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<!-- MiaoBuilds · Tool No.002 Guidance Reconciler v1 · English edition of KaiWuSuo zhiyin-duizhang v1 (origin fingerprint KWSYZ-4B7D) · miaobuilds.com -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Guidance Reconciler · Tool No.002: Guidance vs. Actuals</title>
+<style>
+  :root { --navy:#0f3d3e; --gold:#c9a227; --ink:#1a1a1a; --mut:#777; --line:#e3e3e3;
+          --ok:#1e7d32; --bad:#c62828; --warn:#b26a00; --gray:#666; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+         background:#f6f6f4; color:var(--ink); }
+  header { background:var(--navy); color:#fff; padding:18px 20px 14px; }
+  header .brand { color:var(--gold); font-size:12px; letter-spacing:2px; }
+  header h1 { margin:4px 0 2px; font-size:22px; }
+  header .sub { font-size:13px; color:#cfd6f2; }
+  main { max-width:1060px; margin:0 auto; padding:16px; }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width:760px){ .cols { grid-template-columns:1fr; } }
+  label { display:block; font-size:13px; font-weight:600; margin:0 0 6px; }
+  textarea { width:100%; height:190px; padding:10px; border:1px solid var(--line); border-radius:8px;
+             font-size:14px; line-height:1.6; resize:vertical; background:#fff; }
+  .toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:14px 0 6px; }
+  .toolbar input { flex:0 1 260px; padding:9px 10px; border:1px solid var(--line); border-radius:8px; font-size:14px; }
+  button { border:0; border-radius:8px; padding:10px 18px; font-size:14px; cursor:pointer; }
+  .primary { background:var(--navy); color:#fff; font-weight:600; }
+  .ghost { background:#fff; border:1px solid var(--line); color:var(--ink); }
+  .hint { font-size:12px; color:var(--mut); }
+  .verdict { border-radius:10px; padding:14px 16px; font-size:16px; font-weight:700; margin:14px 0 6px; display:none; }
+  .verdict.ok { background:#e6f4ea; color:var(--ok); display:block; }
+  .verdict.bad { background:#fdecea; color:var(--bad); display:block; }
+  .verdict.warn { background:#fff4e0; color:var(--warn); display:block; }
+  .verdict.gray { background:#ececec; color:var(--gray); display:block; }
+  .counts { font-size:13px; color:var(--mut); margin-bottom:10px; }
+  table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line);
+          border-radius:10px; overflow:hidden; font-size:13px; margin-bottom:14px; }
+  th, td { padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+  th { background:#fafafa; font-weight:600; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:9px; font-size:12px; font-weight:700; white-space:nowrap; }
+  .pill.ok { background:#e6f4ea; color:var(--ok); }
+  .pill.bad { background:#fdecea; color:var(--bad); }
+  .pill.warn { background:#fff4e0; color:var(--warn); }
+  .src { color:#555; font-size:12px; line-height:1.5; }
+  h3.sec { font-size:15px; margin:18px 0 8px; }
+  .archive, .foot { background:#fff; border:1px solid var(--line); border-radius:10px; padding:10px 14px; font-size:13px; line-height:1.7; margin-bottom:14px; }
+  .summary { width:100%; height:110px; font-size:13px; }
+  footer { font-size:12px; color:var(--mut); text-align:center; margin:20px 0 8px; line-height:1.8; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">MIAOBUILDS</div>
+  <h1>Guidance Reconciler · Tool No.002</h1>
+  <div class="sub">The guidance a company gave, reconciled line by line against what it later reported</div>
+</header>
+<main>
+  <div class="cols">
+    <div>
+      <label for="guide">Guidance (last quarter: outlook section / call guidance)</label>
+      <textarea id="guide" placeholder="Paste the guidance the company gave last quarter here: revenue, gross margin, expenses, capex. The original wording, ranges included, works best."></textarea>
+    </div>
+    <div>
+      <label for="actual">Actuals (this quarter: earnings release)</label>
+      <textarea id="actual" placeholder="Paste this quarter's earnings release here. If it carries new guidance for next quarter, that is filed into the archive section automatically."></textarea>
+    </div>
+  </div>
+  <div class="toolbar">
+    <input id="title" type="text" placeholder="Company / period (optional, e.g. Nvidia FY2026 Q3)">
+    <button class="primary" id="run">Run reconciliation</button>
+    <button class="ghost" id="demo">Load demo</button>
+    <button class="ghost" id="clear">Clear</button>
+    <span class="hint">v1 works on pasted text only. An item is judged only when the basis aligns; anything it cannot judge is marked Basis check. A guidance item with no match in the actuals gets its own alarm.</span>
+  </div>
+  <div id="report"></div>
+  <footer>
+    MiaoBuilds · Building small tools with AI, in public<br>
+    Guidance Reconciler v1 · English edition · A single local file · No network · No upload
+  </footer>
+</main>
+<script>
+"use strict";
+/* ============ 值解析：金额 / 百分比 / 计数，统一量级 ============ */
+const SCALE = { billion:9, bn:9, b:9, million:6, m:6, k:3, "亿":8, "万":4 };
+const VAL_RE = /\$?\s?\d[\d,]*\.?\d*\s?(?:billion|million|bn|B|M|K|亿|万|%)?/g;
+function parseVal(tok) {
+  const t = String(tok).trim();
+  const isPct = /%$/.test(t.replace(/\s/g, ""));
+  const m = t.replace(/[$,\s%]/g, "").match(/^(\d+\.?\d*)(billion|million|bn|B|M|K|亿|万)?$/i);
+  if (!m) return null;
+  let v = parseFloat(m[1]);
+  const unit = m[2] ? m[2].toLowerCase() : "";
+  if (isPct) return { v, kind: "pct", raw: tok.trim() };
+  if (unit) v *= Math.pow(10, SCALE[unit] || 0);
+  return { v, kind: "num", raw: tok.trim() };
+}
+function fmtVal(x) {
+  if (!x) return "—";
+  if (x.kind === "pct") return trimNum(x.v) + "%";
+  const v = x.v;
+  if (Math.abs(v) >= 1e9) return "$" + trimNum(v / 1e9) + "B";
+  if (Math.abs(v) >= 1e6) return "$" + trimNum(v / 1e6) + "M";
+  return trimNum(v);
+}
+function trimNum(n) { return String(Math.round(n * 100) / 100); }
+function fmtItem(it) {
+  if (it.lo === it.hi) return fmtVal(it.loVal);
+  return fmtVal(it.loVal) + " – " + fmtVal(it.hiVal);
+}
+
+/* ============ 切句 ============ */
+function splitSentences(text) {
+  const out = [];
+  const safe = String(text || "").replace(/\s+/g, " ").replace(/(\d)\.(\d)/g, "$1\u0001$2");
+  const parts = safe.split(/(?<=[。！？.!?;；])\s*/);
+  for (const p of parts) { const s = p.replace(/\u0001/g, ".").trim(); if (s) out.push(s); }
+  return out;
+}
+
+/* ============ 指标词典 ============ */
+const METRICS = [
+  { key: "gross_margin", label: "Gross margin", re: /gross margin|毛利率/i, want: "pct" },
+  { key: "gross_profit", label: "Gross profit", re: /gross profit|毛利润/i, want: "num" },
+  { key: "op_margin", label: "Operating margin", re: /operating margin|营业利润率/i, want: "pct" },
+  { key: "op_income", label: "Operating income", re: /operating income|营业利润|经营利润/i, want: "num" },
+  { key: "eps", label: "EPS", re: /earnings per share|diluted eps|\beps\b|每股收益/i, want: "num" },
+  { key: "revenue", label: "Revenue", re: /\brevenue\b|net sales|营收|营业收入|总收入|收入/i, want: "num" },
+  { key: "opex", label: "Operating expenses", re: /operating expenses|opex|经营费用|营业费用/i, want: "num" },
+  { key: "capex", label: "Capital expenditures", re: /capital expenditures|capex|资本开支|资本支出/i, want: "num" },
+  { key: "fcf", label: "Free cash flow", re: /free cash flow|自由现金流/i, want: "num" },
+  { key: "net_income", label: "Net income", re: /net income|净利润/i, want: "num" },
+  { key: "shipments", label: "Shipments", re: /shipments|出货量/i, want: "num" }
+];
+const SEG_RE = /([A-Z][A-Za-z&/ -]{2,28}?)\s+revenue\b/g;
+const GROWTH_RE = /grow|growth|增长|上升|同比|环比/i;
+const FUTURE_RE = /expects?|guidance|outlook|forecast|will be|预计|预期|展望|指引/i;
+const PAST_RE = /\bwas\b|\bwere\b|rose|reached|grew|totaled|reported|为|达|实现/i;
+
+/* 从一句里抽值表达式：先区间，后单值。返回 [{lo,hi,loVal,hiVal,span}] */
+function extractValues(sent) {
+  const vals = [];
+  const taken = [];
+  const rangeRes = [
+    new RegExp("between\\s+(" + VAL_RE.source.replace(/g$/, "") + ")\\s+and\\s+(" + VAL_RE.source.replace(/g$/, "") + ")", "gi"),
+    new RegExp("(" + VAL_RE.source.replace(/g$/, "") + ")\\s*(?:to|–|—|~|至|到)\\s*(" + VAL_RE.source.replace(/g$/, "") + ")", "gi")
+  ];
+  for (const rr of rangeRes) {
+    let m;
+    while ((m = rr.exec(sent))) {
+      const a = parseVal(m[1]), b = parseVal(m[2]);
+      if (!a || !b || a.kind !== b.kind) continue;
+      if (taken.some(t => m.index >= t[0] && m.index < t[1])) continue;
+      taken.push([m.index, m.index + m[0].length]);
+      vals.push({ lo: Math.min(a.v, b.v), hi: Math.max(a.v, b.v), loVal: a.v <= b.v ? a : b, hiVal: a.v <= b.v ? b : a, kind: a.kind, start: m.index });
+    }
+  }
+  const single = new RegExp(VAL_RE.source, "g");
+  let m2;
+  while ((m2 = single.exec(sent))) {
+    if (taken.some(t => m2.index >= t[0] && m2.index < t[1])) continue;
+    const p = parseVal(m2[0]);
+    if (!p) continue;
+    if (!/\d/.test(m2[0])) continue;
+    taken.push([m2.index, m2.index + m2[0].length]);
+    vals.push({ lo: p.v, hi: p.v, loVal: p, hiVal: p, kind: p.kind, start: m2.index });
+  }
+  vals.sort((x, y) => x.start - y.start);
+  return vals;
+}
+
+/* 从一段文本抽指标项。mode: "guide" | "actual" */
+function extractItems(text, mode) {
+  const items = [], leftover = [];
+  for (const sent of splitSentences(text)) {
+    const vals = extractValues(sent);
+    if (!vals.length) continue;
+    const used = new Array(vals.length).fill(false);
+    // 分部营收优先，避免与总营收重复计数
+    const mentions = [];
+    let sm;
+    SEG_RE.lastIndex = 0;
+    while ((sm = SEG_RE.exec(sent))) {
+      const name = sm[1].trim();
+      if (/^(total|net|the|and|of)$/i.test(name)) continue;
+      mentions.push({ key: "seg:" + name.toLowerCase(), label: name + " revenue", at: sm.index, want: "num" });
+    }
+    for (const mt of METRICS) {
+      const mm = sent.match(mt.re);
+      if (mm) mentions.push({ key: mt.key, label: mt.label, at: sent.indexOf(mm[0]), want: mt.want });
+    }
+    mentions.sort((a, b) => a.at - b.at);
+    const seenKey = {};
+    for (const mn of mentions) {
+      if (seenKey[mn.key]) continue;
+      // 找离该提及最近的未用值（优先其后）
+      let best = -1, bestScore = 1e9;
+      for (let i = 0; i < vals.length; i++) {
+        if (used[i]) continue;
+        const d = vals[i].start >= mn.at ? (vals[i].start - mn.at) : (mn.at - vals[i].start) + 500;
+        if (d < bestScore) { bestScore = d; best = i; }
+      }
+      if (best < 0) continue;
+      used[best] = true; seenKey[mn.key] = true;
+      const v = vals[best];
+      const isGrowth = v.kind === "pct" && GROWTH_RE.test(sent) && (mn.key === "revenue");
+      items.push({
+        key: isGrowth ? "revenue_growth" : mn.key,
+        label: isGrowth ? "Revenue growth" : mn.label,
+        want: isGrowth ? "pct" : mn.want,
+        lo: v.lo, hi: v.hi, loVal: v.loVal, hiVal: v.hiVal, kind: v.kind,
+        sent
+      });
+    }
+    vals.forEach((v, i) => { if (!used[i]) leftover.push(v.loVal.raw); });
+  }
+  return { items, leftover };
+}
+
+/* 实际文本分流：新指引句进存档，其余作实际 */
+function splitActual(text) {
+  const actSents = [], newGuideSents = [];
+  for (const s of splitSentences(text)) {
+    const hasFuture = FUTURE_RE.test(s);
+    const firstValAt = s.search(/\$?\d/);
+    const pastBefore = firstValAt > 0 && PAST_RE.test(s.slice(0, firstValAt + 12));
+    if (hasFuture && !pastBefore) newGuideSents.push(s); else actSents.push(s);
+  }
+  return { actualText: actSents.join(" "), newGuideText: newGuideSents.join(" ") };
+}
+
+/* ============ 对账 ============ */
+function reconcile(guideText, actualText) {
+  const g = extractItems(guideText, "guide");
+  const split = splitActual(actualText);
+  const a = extractItems(split.actualText, "actual");
+  const ng = extractItems(split.newGuideText, "guide");
+  const byKey = {};
+  for (const it of a.items) { (byKey[it.key] = byKey[it.key] || []).push(it); }
+  const rows = [];
+  for (const gi of g.items) {
+    const cands = byKey[gi.key] || [];
+    const ai = cands.find(c => c.kind === gi.kind) || cands[0];
+    if (!ai) { rows.push({ g: gi, a: null, status: "missing", note: "Not found in the actuals text" }); continue; }
+    if (ai.kind !== gi.kind || (gi.want === "pct") !== (ai.kind === "pct")) {
+      rows.push({ g: gi, a: ai, status: "basis", note: "Basis mismatch: guidance gave " + (gi.kind === "pct" ? "a percentage" : "a money/count figure") + ", the actuals gave " + (ai.kind === "pct" ? "a percentage" : "a money/count figure") + ". Not judged." });
+      continue;
+    }
+    const mid = (gi.lo + gi.hi) / 2;
+    const av = ai.lo;
+    let status, note;
+    if (av >= gi.lo && av <= gi.hi) { status = "ok"; note = "Inside the guidance range"; }
+    else if (av > gi.hi) { status = "beat"; note = "Above the top of the range by " + pct1((av - gi.hi) / Math.abs(gi.hi || 1) * 100) + "%"; }
+    else { status = "miss"; note = "Below the bottom of the range by " + pct1((gi.lo - av) / Math.abs(gi.lo || 1) * 100) + "%"; }
+    if (mid) note += "; attainment vs midpoint " + pct1(av / mid * 100) + "%";
+    rows.push({ g: gi, a: ai, status, note });
+  }
+  return { rows, newGuide: ng.items, leftover: g.leftover };
+}
+function pct1(n) { return (Math.round(n * 10) / 10).toString(); }
+
+/* ============ 演示数据（虚构） ============ */
+const DEMO_G = "For the third quarter, we expect revenue between $8.0 billion and $8.4 billion. Gross margin is expected to be 62% to 64%. Operating expenses are expected to be approximately $1.1 billion. Capital expenditures for the year are expected to total approximately $4.8 billion. Data Center revenue is expected to be approximately $5.5 billion.";
+const DEMO_A = "Revenue rose to $8.6 billion. Gross margin was 61.2%. Operating expenses were 14% of revenue. Data Center revenue reached $5.9 billion. For the fourth quarter, we expect revenue between $8.8 billion and $9.2 billion.";
+
+/* ============ 渲染 ============ */
+function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+const STATUS = {
+  ok: ["pill ok", "Met"], beat: ["pill ok", "Beat"], miss: ["pill bad", "Missed"],
+  basis: ["pill warn", "Basis check"], missing: ["pill warn", "Not mentioned"]
+};
+function render(res, title) {
+  const rows = res.rows;
+  const n = s => rows.filter(r => r.status === s).length;
+  const judged = n("ok") + n("beat") + n("miss");
+  let cls, head;
+  if (!rows.length) { cls = "gray"; head = "Grey light: no reconcilable guidance items were extracted from either side. Do not conclude anything yet."; }
+  else if (n("miss")) { cls = "bad"; head = "Red light: " + n("miss") + (n("miss") === 1 ? " guidance item missed." : " guidance items missed."); }
+  else if (n("basis") || n("missing")) { cls = "warn"; head = "Yellow light: no misses, but " + (n("basis") + n("missing")) + (n("basis") + n("missing") === 1 ? " item needs" : " items need") + " a basis check or was not mentioned."; }
+  else { cls = "ok"; head = "Green light: every guidance item was met."; }
+  let h = '<div class="verdict ' + cls + '">' + esc(head) + "</div>";
+  h += '<div class="counts">Guidance items ' + rows.length + " · Judged " + judged + (title ? " · " + esc(title) : "") + "</div>";
+  if (rows.length) {
+    h += "<table><tr><th>Item</th><th>Guidance</th><th>Actual</th><th>Verdict</th><th>Side by side</th></tr>";
+    for (const r of rows) {
+      const st = STATUS[r.status];
+      h += "<tr><td><b>" + esc(r.g.label) + "</b></td><td>" + esc(fmtItem(r.g)) + "</td><td>" +
+        (r.a ? esc(fmtItem(r.a)) : "—") + '</td><td><span class="' + st[0] + '">' + st[1] + "</span><br>" + esc(r.note) + "</td>" +
+        '<td class="src">Guidance: ' + esc(trunc(r.g.sent)) + (r.a ? "<br>Actual: " + esc(trunc(r.a.sent)) : "") + "</td></tr>";
+    }
+    h += "</table>";
+  }
+  if (res.newGuide.length) {
+    h += '<h3 class="sec">New guidance in this release (auto-extracted; next quarter\'s left column)</h3><div class="archive">';
+    h += res.newGuide.map(it => "· " + esc(it.label) + ": " + esc(fmtItem(it))).join("<br>");
+    h += "</div>";
+  }
+  if (res.leftover.length) {
+    h += '<h3 class="sec">Unclassified numbers (in the guidance text, matched to no metric)</h3><div class="foot">' + esc(res.leftover.slice(0, 12).join(", ")) + "</div>";
+  }
+  const missLines = rows.filter(r => r.status === "miss").map(r => "Missed: " + r.g.label + ", guidance " + fmtItem(r.g) + ", actual " + (r.a ? fmtItem(r.a) : "—"));
+  const sum = "Guidance reconciliation summary" + (title ? " (" + title + ")" : "") + ": " + rows.length + " items. Met " + n("ok") + ", beat " + n("beat") + ", missed " + n("miss") + ", basis check " + n("basis") + ", not mentioned " + n("missing") + "." + (missLines.length ? "\n" + missLines.join("\n") : "");
+  h += '<h3 class="sec">Summary (copyable)</h3><textarea class="summary" readonly id="sumBox">' + esc(sum) + '</textarea>';
+  h += '<div class="toolbar"><button class="ghost" id="copySum">Copy summary</button></div>';
+  return h;
+}
+function trunc(s) { return s.length > 110 ? s.slice(0, 110) + "…" : s; }
+
+if (typeof document !== "undefined") {
+  const $ = id => document.getElementById(id);
+  $("run").addEventListener("click", () => {
+    $("report").innerHTML = render(reconcile($("guide").value, $("actual").value), $("title").value.trim());
+    const c = $("copySum");
+    if (c) c.addEventListener("click", () => { $("sumBox").select(); document.execCommand("copy"); });
+  });
+  $("demo").addEventListener("click", () => {
+    $("guide").value = DEMO_G; $("actual").value = DEMO_A; $("title").value = "NorthPeak (fictional demo)";
+    $("report").innerHTML = render(reconcile(DEMO_G, DEMO_A), "NorthPeak (fictional demo)");
+    const c = $("copySum");
+    if (c) c.addEventListener("click", () => { $("sumBox").select(); document.execCommand("copy"); });
+  });
+  $("clear").addEventListener("click", () => {
+    $("guide").value = ""; $("actual").value = ""; $("title").value = ""; $("report").innerHTML = "";
+  });
+  console.log("Guidance Reconciler v1 · MiaoBuilds · English edition of KWSYZ-4B7D");
+}
+</script>
+</body>
+</html>
